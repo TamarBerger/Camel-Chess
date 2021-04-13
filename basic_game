@@ -1,0 +1,460 @@
+from abc import ABC, abstractmethod
+
+
+class Color:
+    """Describe the game pieces' color"""
+    BLACK = 0
+    WHITE = 1
+
+    def enemy_of(color):
+        """Return the opponent color."""
+        if color == Color.BLACK:
+            return Color.WHITE
+        return Color.BLACK
+
+
+class Board:
+    """Create and maintain the game board."""
+
+    # Some functions below will not work well with altered board size.
+    BOARD_SIZE = (8, 8)
+
+    def __init__(self):
+        self.reset()
+
+    def get_square(self, row, col):
+        """Return the game piece by its position on board.
+
+        If there is no piece in this position, or if the position does
+        not exist - return False.
+        """
+        if self.is_valid_square(row, col):
+            return self.board[row][col]
+
+    def set_square(self, row, col, piece):
+        """Place piece on board."""
+        self.board[row][col] = piece
+
+    def is_valid_square(self, row, column):
+        """Return True if square in board bounds, False otherwise."""
+        row_exists = row in range(self.BOARD_SIZE[0])
+        column_exists = column in range(self.BOARD_SIZE[1])
+        return row_exists and column_exists
+
+    def is_empty_square(self, square):
+        """Return True if square is unoccupied, False otherwise.
+
+        An empty square is a square which has no game piece on it.
+        If the square is out of board bounds, we consider it empty.
+        """
+        return self.get_square(*square) is None
+
+    def _generate_back_row(self, color):
+        """Place player's first row pieces on board."""
+        row_by_color = {Color.BLACK: 0, Color.WHITE: self.BOARD_SIZE[0] - 1}
+        row = row_by_color[color]
+
+        order = (Rook, Knight, Bishop, Queen, King, Bishop, Knight, Rook)
+        params = {'color': color, 'row': row}
+        return [order[i](col=i, **params) for i in range(self.BOARD_SIZE[0])]
+
+    def _generate_pawns_row(self, color):
+        """Place player's pawns row on board."""
+        row_by_color = {Color.BLACK: 1, Color.WHITE: self.BOARD_SIZE[0] - 2}
+        row = row_by_color[color]
+        params = {'color': color, 'row': row}
+        return [Pawn(col=i, **params) for i in range(self.BOARD_SIZE[0])]
+
+    def get_pieces(self, color=None):
+        """Yield the player's pieces.
+
+        If color is unspecified (None), yield all pieces on board.
+        """
+        for row in self.board:
+            for square in row:
+                if square is not None and (color in (None, square.color)):
+                    yield square
+
+    def reset(self):
+        """Set traditional board and pieces in initial positions."""
+        self.board = [
+            self._generate_back_row(Color.BLACK),
+            self._generate_pawns_row(Color.BLACK),
+            [None] * self.BOARD_SIZE[0],
+            [None] * self.BOARD_SIZE[0],
+            [None] * self.BOARD_SIZE[0],
+            [None] * self.BOARD_SIZE[0],
+            self._generate_pawns_row(Color.WHITE),
+            self._generate_back_row(Color.WHITE),
+        ]
+
+    def move(self, source, destination):
+        """Move a piece from its place to a designated location."""
+        piece = self.get_square(*source)
+        return piece.move(board=self, destination=destination)
+
+    def __str__(self):
+        """Return current state of the board for display purposes."""
+        printable = ""
+        for row in self.board:
+            for col in row:
+                if col is None:
+                    printable = printable + " ▭ "
+                else:
+                    printable = printable + f" {col} "
+            printable = printable + '\n'
+        return printable
+
+
+class Piece(ABC):
+    """Represent a general chess piece."""
+
+    def __init__(self, color, row, col, **kwargs):
+        super().__init__(**kwargs)
+        self.color = color
+        self.row = row
+        self.col = col
+        self.moved = False
+        self.directions = set()
+
+    def is_possible_target(self, board, target):
+        """Return True if the move is legal, False otherwise.
+
+        A move is considered legal if the piece can move from its
+        current location to the target location.
+        """
+        is_target_valid = board.is_valid_square(*target)
+        is_empty_square = board.is_empty_square(target)
+        is_hitting_enemy = self.is_enemy(board.get_square(*target))
+        return is_target_valid and (is_empty_square or is_hitting_enemy)
+
+    @abstractmethod
+    def get_valid_moves(self, board):
+        """Yield the valid target positions the piece can travel to."""
+        pass
+
+    def get_position(self):
+        """Return piece current position."""
+        return self.row, self.col
+
+    def is_enemy(self, piece):
+        """Return if the piece belongs to the opponent."""
+        if piece is None:
+            return False
+        return piece.color != self.color
+
+    def move(self, board, destination):
+        """Change piece position on the board.
+
+        Return True if the piece's position has successfully changed.
+        Return False otherwise.
+        """
+        if not self.is_possible_target(board, destination):
+            return False
+        if destination not in self.get_valid_moves(board):
+            return False
+
+        board.set_square(*self.get_position(), None)
+        board.set_square(*destination, self)
+        self.row, self.col = destination
+        self.moved = True
+        return True
+
+    def get_squares_threatens(self, board):
+        """Get all the squares which this piece threatens.
+
+        This is usually just where the piece can go, but sometimes
+        the piece threat squares which are different than the squares
+        it can travel to.
+        """
+        for move in self.get_valid_moves(board):
+            yield move
+
+    @abstractmethod
+    def __str__(self):
+        pass
+
+
+class WalksDiagonallyMixin:
+    """Define diagonal movement on the board.
+
+    This mixin should be used only in a Piece subclasses.
+    Its purpose is to add possible movement directions to a specific
+    kind of game piece.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.directions.update({
+            (-1, -1),          (1, -1),
+
+            (-1,  1),          (1,  1),
+        })
+
+
+class WalksStraightMixin:
+    """Define straight movement on the board.
+
+    This mixin should be used only in a Piece subclasses.
+    Its purpose is to add possible movement directions to a specific
+    kind of game piece.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.directions.update({
+                      (0, -1),
+            (-1,  0),          (1,  0),
+                      (0,  1),
+        })
+
+
+class WalksMultipleStepsMixin:
+    """Define a same-direction, multiple-step movement on the board.
+
+    This mixin should be used only on a Piece subclasses.
+    Its purpose is to allow a piece to travel long distances based on a
+    single-step pattern.
+
+    For example, the bishop can move diagonally up to 7 squares per
+    turn (in an orthodox chess game). This mixin allows it if the
+    `directions` property is set to the 4 possible diagonal steps. It
+    does so by overriding the get_valid_moves method and uses the
+    instance `directions` property to determine the possible step for
+    the piece.
+    """
+
+    def get_valid_moves(self, board, **kwargs):
+        """Yield the valid target positions the piece can travel to."""
+        for row_change, col_change in self.directions:
+            steps = 1
+            stop_searching_in_this_direction = False
+            while not stop_searching_in_this_direction:
+                new_row = self.row + row_change * steps
+                new_col = self.col + col_change * steps
+                target = (new_row, new_col)
+                is_valid_target = self.is_possible_target(board, target)
+                if is_valid_target:
+                    yield target
+                    steps = steps + 1
+                    is_hit_enemy = self.is_enemy(board.get_square(*target))
+                if not is_valid_target or (is_valid_target and is_hit_enemy):
+                    stop_searching_in_this_direction = True
+
+
+class Bishop(WalksDiagonallyMixin, WalksMultipleStepsMixin, Piece):
+    """A classic Bishop chess piece.
+
+    The bishop moves any number of blank squares straight.
+    """
+    def __str__(self):
+        if self.color == Color.WHITE:
+            return '♗'
+        return '♝'
+
+
+class Rook(WalksStraightMixin, WalksMultipleStepsMixin, Piece):
+    """A classic Rook chess piece.
+
+    The rook moves any number of blank squares straight.
+    """
+    def __str__(self):
+        if self.color == Color.WHITE:
+            return '♖'
+        return '♜'
+
+
+class Queen(
+    WalksStraightMixin, WalksDiagonallyMixin, WalksMultipleStepsMixin, Piece,
+):
+    """A classic Queen chess piece.
+
+    The queen moves any number of blank squares straight or diagonally.
+    """
+    def __str__(self):
+        if self.color == Color.WHITE:
+            return '♕'
+        return '♛'
+
+
+class Pawn(Piece):
+    """A classic Pawn chess piece.
+
+    A pawn moves straight forward one square, if that square is empty.
+    If it has not yet moved, a pawn also has the option of moving two
+    squares straight forward, provided both squares are empty.
+    Pawns can only move forward.
+
+    A pawn can capture an enemy piece on either of the two squares
+    diagonally in front of the pawn. It cannot move to those squares if
+    they are empty, nor to capture an enemy in front of it.
+
+    A pawn can also be involved in en-passant or in promotion, which is
+    yet to be implemented on this version of the game.
+    """
+    DIRECTION_BY_COLOR = {Color.BLACK: 1, Color.WHITE: -1}
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.forward = self.DIRECTION_BY_COLOR[self.color]
+
+    def _get_regular_walk(self):
+        """Return position after a single step forward."""
+        return self.row + self.forward, self.col
+
+    def _get_double_walk(self):
+        """Return position after a double step forward."""
+        src_row, src_col = self.get_position()
+        return (src_row + self.forward * 2, src_col)
+
+    def _get_diagonal_walks(self):
+        """Returns position after a diagonal move.
+
+        This only happens when hitting an enemy.
+        It could also happen on "en-passant", which is
+        unimplemented feature for now.
+        """
+        src_row, src_col = self.get_position()
+        return (
+            (src_row + self.forward, src_col + 1),
+            (src_row + self.forward, src_col - 1),
+        )
+
+    def is_possible_target(self, board, target):
+        """Return True if the Pawn's move is legal, False otherwise.
+
+        This one is a bit more complicated than the usual case.
+        Pawns can only move forward. They also can move two ranks
+        forward if they have yet to move. Not like the other pieces,
+        pawns can't hit the enemy using their regular movement. They
+        have to hit it diagonally, and can't take a step forward if the
+        enemy is just in front of them.
+        """
+        is_valid_move = board.is_valid_square(*target)
+        is_step_forward = (
+            board.is_empty_square(target)
+            and target == self._get_regular_walk()
+        )
+        is_valid_double_step_forward = (
+            board.is_empty_square(target)
+            and not self.moved
+            and target == self._get_double_walk()
+            and self.is_possible_target(board, self._get_regular_walk())
+        )
+        is_hitting_enemy = (
+            self.is_enemy(board.get_square(*target))
+            and target in self._get_diagonal_walks()
+        )
+        return is_valid_move and (
+            is_step_forward or is_valid_double_step_forward or is_hitting_enemy
+        )
+
+    def get_squares_threatens(self, board, **kwargs):
+        """Get all the squares which the pawn can attack."""
+        for square in self._get_diagonal_walks():
+            if board.is_valid_square(*square):
+                yield square
+
+    def get_valid_moves(self, board, **kwargs):
+        """Yield the valid target positions the piece can travel to.
+
+        The Pawn case is a special one - see is_possible_target's
+        documentation for further details.
+        """
+        targets = (
+            self._get_regular_walk(),
+            self._get_double_walk(),
+            self._get_triple_walk(),
+            *self._get_diagonal_walks(),
+        )
+        for target in targets:
+            if self.is_possible_target(board, target):
+                yield target
+
+    def __str__(self):
+        if self.color == Color.WHITE:
+            return '♙'
+        return '♟'
+
+
+class Knight(Piece):
+    """A classic Knight chess piece.
+
+    Can travel to the nearest square not on the same rank, file, or
+    diagonal. It is not blocked by other pieces: it jumps to the new
+    location.
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.directions.update({
+            (-2, 1), (-1, 2), (1, 2), (2, 1),  # Upper part
+            (-2, -1), (-1, -2), (1, -2), (2, -1),  # Lower part
+        })
+
+    def get_valid_moves(self, board, **kwargs):
+        super().get_valid_moves(board, **kwargs)
+        for add_row, add_col in self.directions:
+            target = (add_row + self.row, add_col + self.col)
+            if self.is_possible_target(board, target):
+                yield target
+
+    def __str__(self):
+        if self.color == Color.WHITE:
+            return '♘'
+        return '♞'
+
+
+class King(WalksStraightMixin, WalksDiagonallyMixin, Piece):
+    """A classic King chess piece.
+
+    Can travel one step, either diagonally or straight.
+    It cannot travel to places where he will be threatened.
+    """
+
+    def _get_threatened_squares(self, board):
+        """Yield positions in which the king will be captured."""
+        enemy = Color.enemy_of(self.color)
+        for piece in board.get_pieces(color=enemy):
+            for move in piece.get_squares_threatens(board):
+                yield move
+
+    def is_possible_target(self, board, target):
+        """Return True if the king's move is legal, False otherwise.
+
+        The king should not move to a square that the enemy threatens.
+        """
+        is_regular_valid = super().is_possible_target(board, target)
+        threatened_squares = self._get_threatened_squares(board)
+        return is_regular_valid and target not in threatened_squares
+
+    def get_valid_moves(self, board, **kwargs):
+        super().get_valid_moves(board, **kwargs)
+        for add_row, add_col in self.directions:
+            target = (add_row + self.row, add_col + self.col)
+            if self.is_possible_target(board, target):
+                yield target
+
+    def get_squares_threatens(self, board):
+        """Get all the squares that this piece may move to.
+
+        This method is especially useful to see if other kings fall
+        into this piece's territory. To prevent recursion, this
+        function returns all squares we threat even if we can't go
+        there.
+
+        For example, take a scenario where the White Bishop is in B2,
+        and the Black King is in B3. The White King is in D3, but it is
+        allowed to go into C3 to threaten the black king if the white
+        bishop protects it.
+        """
+        for direction in self.directions:
+            row, col = self.get_position()
+            row = row + direction[0]
+            col = col + direction[1]
+            if board.is_valid_square(row, col):
+                yield (row, col)
+
+    def __str__(self):
+        if self.color == Color.WHITE:
+            return '♔'
+        return '♚'
